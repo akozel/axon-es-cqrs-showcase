@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "axoniq-app-development@axoniq": true
+  }
+}
