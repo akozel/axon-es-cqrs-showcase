@@ -1,0 +1,5 @@
+.env
+account-verification-service/.gradle/
+build/
+.idea
+*.iml
