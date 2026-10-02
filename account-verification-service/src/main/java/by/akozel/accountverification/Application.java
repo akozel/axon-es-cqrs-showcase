@@ -1,6 +1,8 @@
 package by.akozel.accountverification;
 
 import by.akozel.accountverification.account.AccountConfiguration;
+import by.akozel.accountverification.infrastructure.CommandExecutionConfiguration;
+import by.akozel.accountverification.infrastructure.CommandExecutionSettings;
 import by.akozel.accountverification.infrastructure.DatabaseSettings;
 import by.akozel.accountverification.infrastructure.JpaEventStoreConfiguration;
 import by.akozel.accountverification.infrastructure.PostgresDatabase;
@@ -17,10 +19,12 @@ public final class Application {
 
     public static void main(String[] args) throws InterruptedException {
         DatabaseSettings settings = DatabaseSettings.fromEnvironment();
+        CommandExecutionSettings commandExecution = CommandExecutionSettings.fromEnvironment();
         PostgresDatabase database = PostgresDatabase.connect(settings);
 
         EventSourcingConfigurer configurer = EventSourcingConfigurer.create();
         JpaEventStoreConfiguration.configure(configurer, database.entityManagerFactory());
+        CommandExecutionConfiguration.configure(configurer, commandExecution);
         AccountConfiguration.configure(configurer);
         AxonConfiguration axon = configurer.start();
 
@@ -29,7 +33,8 @@ public final class Application {
             database.close();
         }));
 
-        logger.info("account-verification-service started, event store: {}", settings);
+        logger.info("account-verification-service started, event store: {}, commands on virtual threads: {}",
+                    settings, commandExecution);
         Thread.currentThread().join();
     }
 }

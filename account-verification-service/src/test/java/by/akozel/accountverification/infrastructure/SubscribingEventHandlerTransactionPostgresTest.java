@@ -35,14 +35,14 @@ import org.junit.jupiter.api.Timeout;
 /**
  * Verifies how {@link JpaUnitOfWorkTransactionManager} treats subscribing event handlers. They run inside the
  * publishing unit of work after its events were written, i.e. while it holds its transaction: writing through that
- * unit of work's {@code EntityManager} works, anything that needs a second connection fails at once. Runs against the
+ * unit of work's {@code EntityManager} works, a command sent with its context fails at once. Runs against the
  * PostgreSQL test container.
  */
 @RequiresPostgresContainer
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class SubscribingEventHandlerTransactionPostgresTest {
 
-    private static final String REFUSED = "already holds the open transaction";
+    private static final String REFUSED = "was sent with the processing context of a unit of work that has written";
     private static final String ASKS_FOR_FOLLOW_UP = "please follow up";
 
     public record AddNote(String ssn, String text) {}
@@ -82,7 +82,8 @@ class SubscribingEventHandlerTransactionPostgresTest {
             if (beforeSending != null) {
                 beforeSending.await(30, TimeUnit.SECONDS);
             }
-            context.component(CommandGateway.class).sendAndWait(new AddNote(targetAccount.apply(event.ssn()), "done"));
+            context.component(CommandGateway.class).sendAndWait(new AddNote(targetAccount.apply(event.ssn()), "done"),
+                                                                 context);
         }
     }
 

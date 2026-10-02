@@ -2,7 +2,6 @@ package by.akozel.accountverification.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
@@ -11,6 +10,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -18,6 +18,12 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.EntityTransaction;
 import jakarta.persistence.PersistenceException;
+import org.assertj.core.api.InstanceOfAssertFactories;
+import org.axonframework.messaging.commandhandling.CommandMessage;
+import org.axonframework.messaging.commandhandling.GenericCommandMessage;
+import org.axonframework.messaging.core.MessageDispatchInterceptor;
+import org.axonframework.messaging.core.MessageStream;
+import org.axonframework.messaging.core.MessageType;
 import org.axonframework.messaging.core.configuration.MessagingConfigurer;
 import org.axonframework.messaging.core.unitofwork.ProcessingContext;
 import org.axonframework.messaging.core.unitofwork.UnitOfWorkFactory;
@@ -29,9 +35,11 @@ import org.junit.jupiter.api.Test;
 /**
  * Verifies the transaction handling logic against fake JPA objects, so failures that a real database cannot produce
  * on demand (a failing {@code begin}, {@code commit} or {@code rollback}, a rollback-only transaction) are covered
- * deterministically, as is the refusal of a second connection on a thread that holds a transaction.
+ * deterministically.
  */
 class JpaUnitOfWorkTransactionManagerTest {
+
+    private static final CommandMessage COMMAND = new GenericCommandMessage(new MessageType("test.Ping"), "ping");
 
     private final FakeJpa jpa = new FakeJpa();
     private final JpaUnitOfWorkTransactionManager manager = new JpaUnitOfWorkTransactionManager(jpa.factory());
@@ -180,41 +188,6 @@ class JpaUnitOfWorkTransactionManagerTest {
     class OnAThreadThatAlreadyHoldsATransaction {
 
         @Test
-        void refusesTheConnectionANestedUnitOfWorkWouldNeed() throws Exception {
-            // given
-            AtomicReference<Throwable> nested = new AtomicReference<>();
-
-            // when: a unit of work started on the same thread wants a transaction of its own
-            run(context -> {
-                useEntityManager(context);
-                nested.set(failureOf(inner -> useEntityManager(inner)));
-                return null;
-            });
-
-            // then: it fails at once, and only the outer unit of work touched the database
-            assertThat(nested.get()).hasStackTraceContaining("already holds the open transaction");
-            assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "commit", "close");
-        }
-
-        @Test
-        void refusesAShortTransactionOfItsOwn() throws Exception {
-            // given
-            AtomicReference<Throwable> standalone = new AtomicReference<>();
-
-            // when: e.g. the event storage engine reading events, which it does outside any unit of work
-            run(context -> {
-                useEntityManager(context);
-                standalone.set(catchThrowable(
-                        () -> manager.executorProvider().getTransactionalExecutor(null).apply(em -> em).join()));
-                return null;
-            });
-
-            // then
-            assertThat(standalone.get()).hasStackTraceContaining("already holds the open transaction");
-            assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "commit", "close");
-        }
-
-        @Test
         void allowsNestedWorkThatNeedsNoConnection() throws Exception {
             // when
             String nested = run(context -> {
@@ -239,6 +212,87 @@ class JpaUnitOfWorkTransactionManagerTest {
             // then
             assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "commit", "close",
                                                   "createEntityManager", "begin", "commit", "close");
+        }
+    }
+
+    @Nested
+    class CommandsSentWithTheContextOfAUnitOfWork {
+
+        private final MessageDispatchInterceptor<CommandMessage> interceptor = manager.commandDispatchInterceptor();
+
+        @Test
+        void passBeforeTheUnitOfWorkWrites() throws Exception {
+            // when
+            boolean passed = run(context -> passes(context));
+
+            // then
+            assertThat(passed).isTrue();
+        }
+
+        @Test
+        void areRefusedWhileItsTransactionIsOpen() throws Exception {
+            // when
+            boolean passed = run(context -> {
+                useEntityManager(context);
+                return passes(context);
+            });
+
+            // then
+            assertThat(passed).isFalse();
+        }
+
+        @Test
+        void areRefusedAlsoWhenSentFromAnotherThread() throws Exception {
+            // when
+            boolean passed = run(context -> {
+                useEntityManager(context);
+                return CompletableFuture.supplyAsync(() -> passes(context)).join();
+            });
+
+            // then
+            assertThat(passed).isFalse();
+        }
+
+        @Test
+        void passOnceItsTransactionHasCommitted() throws Exception {
+            // given
+            AtomicReference<Boolean> passedAfterCommit = new AtomicReference<>();
+
+            // when
+            run(context -> {
+                useEntityManager(context);
+                context.runOnAfterCommit(c -> passedAfterCommit.set(passes(c)));
+                return null;
+            });
+
+            // then
+            assertThat(passedAfterCommit.get()).isTrue();
+        }
+
+        @Test
+        void doNotIncludeCommandsSentWithoutAContext() throws Exception {
+            // when: nothing tells which unit of work, if any, sent it
+            boolean passed = run(context -> {
+                useEntityManager(context);
+                return passes(null);
+            });
+
+            // then
+            assertThat(passed).isTrue();
+        }
+
+        /** Whether the interceptor passes a command sent with the given context on; a refusal must explain itself. */
+        private boolean passes(ProcessingContext context) {
+            AtomicBoolean proceeded = new AtomicBoolean();
+            MessageStream<?> result = interceptor.interceptOnDispatch(COMMAND, context, (message, c) -> {
+                proceeded.set(true);
+                return MessageStream.empty();
+            });
+            if (!proceeded.get()) {
+                assertThat(result.error()).get(InstanceOfAssertFactories.THROWABLE)
+                                          .hasMessageContaining("was sent with the processing context");
+            }
+            return proceeded.get();
         }
     }
 

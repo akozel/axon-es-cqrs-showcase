@@ -1,15 +1,16 @@
 package by.akozel.accountverification.infrastructure;
 
-import java.util.concurrent.CompletableFuture;
-
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.EntityTransaction;
 import jakarta.persistence.PersistenceException;
 import jakarta.persistence.RollbackException;
-import org.axonframework.common.function.ThrowingFunction;
 import org.axonframework.common.jpa.EntityManagerExecutor;
-import org.axonframework.common.tx.TransactionalExecutor;
+import org.axonframework.messaging.commandhandling.CommandMessage;
+import org.axonframework.messaging.core.Context;
+import org.axonframework.messaging.core.MessageDispatchInterceptor;
+import org.axonframework.messaging.core.MessageStream;
+import org.axonframework.messaging.core.unitofwork.ProcessingContext;
 import org.axonframework.messaging.core.unitofwork.ProcessingLifecycle;
 import org.axonframework.messaging.core.unitofwork.transaction.Transaction;
 import org.axonframework.messaging.core.unitofwork.transaction.TransactionManager;
@@ -18,6 +19,8 @@ import org.axonframework.messaging.core.unitofwork.transaction.jpa.JpaTransactio
 import org.hibernate.Session;
 import org.postgresql.core.BaseConnection;
 import org.postgresql.core.TransactionState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Gives every unit of work its own {@link EntityManager} and database transaction.
@@ -33,18 +36,22 @@ import org.postgresql.core.TransactionState;
  * whole time would need two connections per command and deadlock a pool that is smaller than the number of concurrent
  * commands. With lazy creation a connection is held only from the moment events are written until the commit.
  * <p>
- * While a unit of work holds its transaction, nothing else on the same thread may open a second connection: waiting
- * for one can exhaust the pool, and writing in a second transaction can wait forever for the first one's locks. This
- * typically happens in a subscribing event handler, which runs inside the publishing unit of work after its events
- * were written; such a request fails immediately. Hand {@link #executorProvider()} to JPA-based Axon components so
- * their own short transactions are checked as well.
+ * While a unit of work holds its transaction, what it waits for must not need a second connection: waiting for one
+ * can exhaust the pool, and writing in a second transaction can wait forever for the first one's locks. This typically
+ * happens in a subscribing event handler, which runs inside the publishing unit of work after its events were written.
+ * {@link #commandDispatchInterceptor()} refuses a command sent there with the unit of work's processing context, from
+ * whichever thread; register it on the command bus. A command sent without the context and an event store read are
+ * not checked: {@code ArchitectureTest} rules out the first in handlers of the production code, and the session's
+ * {@code lock_timeout} and the pool's connection timeout end what remains.
  */
 public class JpaUnitOfWorkTransactionManager implements TransactionManager {
 
+    private static final Logger logger = LoggerFactory.getLogger(JpaUnitOfWorkTransactionManager.class);
+
     private final EntityManagerFactory entityManagerFactory;
     private final JpaTransactionalExecutorProvider executors;
-    /** The scope whose transaction is open on this thread, i.e. that holds a pooled connection until it ends. */
-    private final ThreadLocal<Scope> openTransaction = new ThreadLocal<>();
+    /** The scope of a unit of work, as a resource of its processing context. */
+    private final Context.ResourceKey<Scope> scopeKey = Context.ResourceKey.withLabel("JpaUnitOfWorkScope");
 
     public JpaUnitOfWorkTransactionManager(EntityManagerFactory entityManagerFactory) {
         this.entityManagerFactory = entityManagerFactory;
@@ -68,6 +75,7 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
             Scope scope = new Scope(context);
             EntityManagerExecutor executor = new EntityManagerExecutor(scope::entityManager);
             context.putResource(JpaTransactionalExecutorProvider.SUPPLIER_KEY, () -> executor);
+            context.putResource(scopeKey, scope);
             context.runOnCommit(c -> scope.commit());
             context.onError((c, phase, error) -> scope.rollback());
             context.doFinally(c -> scope.close());
@@ -76,50 +84,53 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
 
     @Override
     public boolean requiresSameThreadInvocations() {
-        return true; // phases must run one after another on one thread, see openTransaction
+        return true; // phases must run one after another on one thread: an EntityManager is not thread-safe
     }
 
     /**
      * Executors for JPA-based Axon components such as the event storage engine: within a unit of work its
-     * {@code EntityManager}, outside one a short transaction of its own, refused while this thread holds a transaction.
+     * {@code EntityManager}, outside one a short transaction of its own.
      */
     public TransactionalExecutorProvider<EntityManager> executorProvider() {
-        return context -> context != null ? executors.getTransactionalExecutor(context) : new StandaloneExecutor();
+        return executors;
     }
 
-    private void assertNoOpenTransaction() {
-        Scope open = openTransaction.get();
-        if (open != null && !open.holdsTransaction()) {
-            openTransaction.remove(); // its unit of work ended without releasing it
-        } else if (open != null) {
-            throw new IllegalStateException(
-                    "This thread already holds the open transaction of a unit of work that has written and not yet "
-                            + "committed; a second connection could exhaust the pool or wait forever for the first "
-                            + "transaction's locks. Typical cause: a subscribing event handler that sends a command or "
-                            + "reads the event store. Move it to a pooled streaming processor.");
-        }
-    }
-
-    /** A short transaction of its own, like the one {@link JpaTransactionalExecutorProvider} creates. */
-    private final class StandaloneExecutor implements TransactionalExecutor<EntityManager> {
-
-        @Override
-        public <R> CompletableFuture<R> apply(ThrowingFunction<EntityManager, R, Exception> function) {
-            try {
-                assertNoOpenTransaction();
-            } catch (IllegalStateException e) {
-                return CompletableFuture.failedFuture(e);
+    /**
+     * Refuses a command sent with the processing context of a unit of work that has written and not yet committed,
+     * whichever thread sends it. The refusal reaches the sender only through the command's result.
+     */
+    public MessageDispatchInterceptor<CommandMessage> commandDispatchInterceptor() {
+        return (command, context, chain) -> {
+            if (context != null && holdsOpenTransaction(context)) {
+                logger.warn("Refused command {}: it was sent from a unit of work that holds an open transaction",
+                            command.type());
+                return MessageStream.failed(new IllegalStateException(
+                        "Command " + command.type() + " was sent with the processing context of a unit of work that "
+                                + "has written and not yet committed its transaction; handling it could exhaust the "
+                                + "pool or wait forever for that transaction's locks. Typical cause: a subscribing "
+                                + "event handler that sends a command. Move it to a pooled streaming processor."));
             }
-            return executors.getTransactionalExecutor(null).apply(function);
-        }
+            return chain.proceed(command, context);
+        };
     }
 
-    /** The {@code EntityManager} and transaction of one unit of work. Used from a single thread. */
+    /** Safe from any thread: reads only what {@link Scope} publishes for this purpose. */
+    private boolean holdsOpenTransaction(ProcessingContext context) {
+        Scope scope = context.getResource(scopeKey);
+        return scope != null && scope.transactionOpen && !scope.unitOfWork.isCompleted();
+    }
+
+    /**
+     * The {@code EntityManager} and transaction of one unit of work. Used from a single thread, except for
+     * {@link #transactionOpen}, which any thread may read.
+     */
     private final class Scope {
 
         private final ProcessingLifecycle unitOfWork;
         private EntityManager entityManager;
         private boolean finished; // the commit step ran or the unit of work failed
+        /** From the start of the transaction until it is released; what the check on the context reads. */
+        private volatile boolean transactionOpen;
 
         private Scope(ProcessingLifecycle unitOfWork) {
             this.unitOfWork = unitOfWork;
@@ -132,7 +143,6 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
                                 + "anything written now would never be committed");
             }
             if (entityManager == null) {
-                assertNoOpenTransaction();
                 EntityManager created = entityManagerFactory.createEntityManager();
                 try {
                     created.getTransaction().begin();
@@ -141,14 +151,9 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
                     throw e;
                 }
                 entityManager = created;
-                openTransaction.set(this);
+                transactionOpen = true;
             }
             return entityManager;
-        }
-
-        private boolean holdsTransaction() {
-            return !finished && !unitOfWork.isCompleted() && entityManager != null && entityManager.isOpen()
-                    && entityManager.getTransaction().isActive();
         }
 
         private void commit() {
@@ -199,9 +204,7 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
         }
 
         private void release() {
-            if (openTransaction.get() == this) {
-                openTransaction.remove();
-            }
+            transactionOpen = false;
         }
 
         /**

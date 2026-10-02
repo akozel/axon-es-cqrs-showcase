@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
+import by.akozel.accountverification.infrastructure.CommandExecutionConfiguration;
+import by.akozel.accountverification.infrastructure.CommandExecutionSettings;
 import by.akozel.accountverification.infrastructure.JpaEventStoreConfiguration;
 import by.akozel.accountverification.infrastructure.PostgresDatabase;
 import by.akozel.accountverification.support.PostgresContainer;
@@ -33,6 +35,7 @@ class AccountPostgresIntegrationTest {
         database = PostgresDatabase.connect(PostgresContainer.settings());
         EventSourcingConfigurer configurer = EventSourcingConfigurer.create();
         JpaEventStoreConfiguration.configure(configurer, database.entityManagerFactory());
+        CommandExecutionConfiguration.configure(configurer, CommandExecutionSettings.defaults());
         AccountConfiguration.configure(configurer);
         axon = configurer.start();
         commands = axon.getComponent(CommandGateway.class);

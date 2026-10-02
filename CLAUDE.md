@@ -2,7 +2,7 @@
 
 CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
 
-- `account-verification-service/` — plain Java + Gradle (no Spring Boot), PostgreSQL event store.
+- `account-verification-service/` — plain Java 25 + Gradle (no Spring Boot), PostgreSQL event store.
 
 ## Rules
 
@@ -16,16 +16,40 @@ CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
 - No Spring / Spring Boot: Axon is configured in plain Java (`EventSourcingConfigurer`).
 - Event store is PostgreSQL via the open-source `AggregateBasedJpaEventStorageEngine` (JPA/Hibernate). It supports
   exactly one tag per event: key = aggregate type, value = aggregate id (e.g. `Account` → SSN).
+- **Java 25 is mandatory** (Gradle toolchain in `build.gradle.kts`, requirement in README). Don't lower it: virtual
+  threads need JDK 24+ (JEP 491); on JDK 21 they deadlock waiting for pooled connections inside Axon's
+  `synchronized` stream code.
+- **Threading model: virtual threads + blocking JDBC.** Don't introduce reactive or event-loop database access (R2DBC,
+  Vert.x SQL client, Hibernate Reactive): Axon 5.2 joins futures inside the unit of work and would block the event
+  loop. Blocking calls are fine on virtual threads.
+- Entry points send commands without a `ProcessingContext`. `VirtualThreadCommandBus` runs each on a virtual thread
+  and admits at most `COMMAND_CONCURRENCY_PER_CPU` × available CPUs at once; one more is rejected immediately
+  (`CommandConcurrencyLimitExceededException`). Dispatch interceptors run on the command's virtual thread, so they
+  don't see the caller's ThreadLocals (e.g. MDC).
+- **Inside handlers, send commands only with the handler's `ProcessingContext`**: `CommandDispatcher` (handler
+  parameter or `CommandDispatcher.forContext(context)`) or `CommandGateway.send/sendAndWait(…, context)`; never the
+  `CommandBus` or a gateway call without the context. Such a command runs on the sender's thread and doesn't count
+  against the limit. Return or join its result: a refusal reaches the sender only through it. `ArchitectureTest`
+  enforces this for production code; it cannot see sends made through helper classes. Never send a command with the
+  routing key of the command being handled (see README, Caveats).
 - One unit of work = one transaction (`JpaUnitOfWorkTransactionManager`), opened at its first write. Until it commits,
-  nothing else on that thread may open a connection; the manager fails fast. So subscribing event handlers only write
-  through the unit of work's `EntityManager`; handlers that send commands or read the event store go in pooled
-  streaming processors.
+  nothing it waits for may need a second connection. `commandDispatchInterceptor()` refuses a command sent with the
+  context of such a unit of work, from any thread. A command sent without the context and an event store read are not
+  checked at runtime; only the database's `lock_timeout` and the pool's connection timeout end them. So subscribing
+  event handlers only write through the unit of work's `EntityManager`; handlers that send commands or read the event
+  store go in pooled streaming processors.
+- **No `ThreadLocal`** in production code: keep the state of a unit of work in `ProcessingContext` resources.
+  `ArchitectureTest` checks it.
+- **After a refactoring, run the existing tests**: `./gradlew build` with a container runtime reachable, and check
+  that no PostgreSQL test was skipped. Existing tests may only get minimal edits (wiring, a renamed API, a message
+  text); name each edit and its reason in the change summary. Cover new behaviour with new tests instead of rewriting
+  existing ones.
 - Local infrastructure runs on Podman (`podman compose`). Configuration lives in `.env` (git-ignored); keep
   `.env.example` in sync when adding variables. Tests don't read `.env`.
 
 ## Commands
 
-Run from `account-verification-service/`:
+Run from `account-verification-service/` (JDK 25 must be installed):
 
 - `cp .env.example .env && podman compose up -d` — start PostgreSQL for `./gradlew run` and manual testing
 - `./gradlew build` — compile and test. The PostgreSQL integration tests start their own PostgreSQL with

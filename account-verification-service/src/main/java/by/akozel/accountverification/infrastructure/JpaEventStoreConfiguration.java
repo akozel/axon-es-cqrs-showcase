@@ -20,6 +20,8 @@ public final class JpaEventStoreConfiguration {
         return configurer
                 .componentRegistry(registry -> registry.registerComponent(
                         TransactionManager.class, config -> transactionManager))
+                .messaging(messaging -> messaging.registerCommandDispatchInterceptor(
+                        config -> transactionManager.commandDispatchInterceptor()))
                 .registerEventStorageEngine(config -> new AggregateBasedJpaEventStorageEngine(
                         transactionManager.executorProvider(),
                         config.getComponent(EventConverter.class),

@@ -36,6 +36,8 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.axonframework:axon-test")
     testImplementation("org.assertj:assertj-core:3.27.7")
+    // Architecture rules, checked by plain JUnit tests (ArchitectureTest)
+    testImplementation("com.tngtech.archunit:archunit:1.5.1")
     // Integration tests start their own PostgreSQL in a container (Podman or Docker)
     testImplementation(platform("org.testcontainers:testcontainers-bom:2.0.5"))
     testImplementation("org.testcontainers:testcontainers-postgresql")
@@ -46,9 +48,12 @@ application {
     mainClass = "by.akozel.accountverification.Application"
 }
 
-tasks.withType<JavaCompile> {
-    // Axon Framework 5 requires Java 21+
-    options.release = 21
+// Java 25 is mandatory (see README): commands run on virtual threads, which need JDK 24+ (JEP 491) to wait for a
+// pooled connection inside Axon's synchronized stream code without pinning their carrier thread.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
 }
 
 // Loads KEY=VALUE pairs from .env (if present), so `./gradlew run` uses the same settings as compose.yaml.

@@ -12,6 +12,8 @@ import javax.management.JMException;
 import javax.management.ObjectName;
 
 import by.akozel.accountverification.account.AccountConfiguration;
+import by.akozel.accountverification.infrastructure.CommandExecutionConfiguration;
+import by.akozel.accountverification.infrastructure.CommandExecutionSettings;
 import by.akozel.accountverification.infrastructure.JpaEventStoreConfiguration;
 import by.akozel.accountverification.infrastructure.PostgresDatabase;
 import com.zaxxer.hikari.HikariConfig;
@@ -60,6 +62,7 @@ public final class PostgresAxonEnvironment implements AutoCloseable {
         });
         EventSourcingConfigurer configurer = EventSourcingConfigurer.create();
         JpaEventStoreConfiguration.configure(configurer, database.entityManagerFactory());
+        CommandExecutionConfiguration.configure(configurer, CommandExecutionSettings.defaults());
         AccountConfiguration.configure(configurer);
         extraConfiguration.accept(configurer);
         return new PostgresAxonEnvironment(database, configurer.start(), poolName);
