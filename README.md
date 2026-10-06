@@ -12,35 +12,39 @@ no Spring.
   PostgreSQL with Testcontainers through the Docker-compatible socket (`/var/run/docker.sock` from
   `podman-mac-helper`, or `DOCKER_HOST`); without a container runtime they are skipped.
 
-The Gradle wrapper (`./gradlew`) downloads Gradle itself.
+The Gradle wrapper (`./gradlew`, in the repository root) downloads Gradle itself.
 
 ## Quick start
 
-From `account-verification-service/`:
-
 ```shell
-cp .env.example .env && podman compose up -d   # PostgreSQL for ./gradlew run
-./gradlew build                                 # compile and run all tests
-./gradlew run                                   # start the application (reads .env)
+(cd account-verification-service && cp .env.example .env && podman compose up -d)   # PostgreSQL for ./gradlew run
+./gradlew build                                                                     # compile and test all modules
+./gradlew run                                                                       # start the service (reads its .env)
 ```
 
 ## Architecture
 
-`account-verification-service` is split into four layers, as packages of `by.akozel.accountverification`:
+One Gradle build with two modules:
 
-| Layer          | Package                          | Contents                                                                   |
-|----------------|----------------------------------|----------------------------------------------------------------------------|
-| domain         | `domain.account`                 | event-sourced entities with their commands, events and rules (`Account`)   |
-| application    | `application.account`            | registers the entities and handlers with Axon (`AccountConfiguration`)     |
-| infrastructure | `infrastructure.persistence`     | PostgreSQL pool, unit-of-work transactions, JPA event store                |
-|                | `infrastructure.messaging`       | command execution on virtual threads with an admission limit               |
-| presentation   | `presentation`                   | entry points (HTTP, CLI, …); none yet                                      |
+- **`axon-foundation`** (`by.akozel.axon.foundation`): the base configuration of Axon Framework 5 that every service
+  builds on. It knows no service. `persistence` holds the PostgreSQL pool, the unit-of-work transactions and the JPA
+  event store; `messaging` holds command execution on virtual threads with an admission limit. The two don't depend on
+  each other. Its test fixtures (`PostgresContainer`, `RequiresPostgresContainer`, `PostgresAxonEnvironment`) let a
+  service's tests run against PostgreSQL with the real wiring.
+- **`account-verification-service`** (`by.akozel.accountverification`), split into layers:
 
-`Application` in the root package is the entry point and composition root: it reads the settings and wires the layers
-together. Dependencies point inward only: domain ← application ← infrastructure / presentation ← `Application`. Only
-`Application` uses the infrastructure, and the infrastructure sub-packages don't depend on each other. The domain keeps
-Axon's modelling annotations, but neither it nor the application layer may use JPA, Hibernate, JDBC or the connection
-pool. `LayeredArchitectureTest` checks all of this.
+  | Layer          | Package               | Contents                                                                    |
+  |----------------|-----------------------|-----------------------------------------------------------------------------|
+  | domain         | `domain.account`      | event-sourced entities with their commands, events and rules (`Account`)    |
+  | application    | `application.account` | registers the entities and handlers with Axon (`AccountConfiguration`)      |
+  | infrastructure | `infrastructure`      | service-specific adapters (read model storage, …); none yet                 |
+  | presentation   | `presentation`        | entry points (HTTP, CLI, …); none yet                                       |
+
+`Application` in the service's root package is the entry point and composition root: it reads the settings and wires
+`axon-foundation` and the layers together. Dependencies point inward only: domain ← application ← infrastructure /
+presentation ← `Application`; only `Application` (and the service's own infrastructure) use `axon-foundation`. The
+domain keeps Axon's modelling annotations, but neither it nor the application layer may use JPA, Hibernate, JDBC or
+the connection pool. `LayeredArchitectureTest` checks the service, `FoundationArchitectureTest` the module.
 
 The namespace of a message (`@Event`/`@Command(namespace = …)`) is part of its stored type name, not the Java
 package: it stays `by.akozel.accountverification.account` so that events already written can still be read.
@@ -68,8 +72,8 @@ package: it stays `by.akozel.accountverification.account` so that events already
 - One unit of work is one database transaction on one thread. The transaction starts at the first write, so a
   connection is held only from then until the commit. The connection pool, not the number of threads, limits how many
   commands work with the database at the same time.
-- The state of a unit of work lives in its `ProcessingContext`, never in a `ThreadLocal`; `ArchitectureTest` checks
-  this.
+- The state of a unit of work lives in its `ProcessingContext`, never in a `ThreadLocal`; `ArchitectureTest` and
+  `FoundationArchitectureTest` check this.
 
 ## Sending commands from handlers
 

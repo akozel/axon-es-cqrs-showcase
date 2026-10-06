@@ -1,59 +1,30 @@
 plugins {
-    id("java")
+    id("java-conventions")
     application
 }
 
-group = "by.akozel"
-version = "1.0-SNAPSHOT"
-
-repositories {
-    mavenCentral()
-}
-
-// Versions match the ones Axon Framework 5.2.x is built and tested against.
-val axonVersion = "5.2.3"
-val hibernateVersion = "7.4.4.Final"
-val hikariVersion = "7.1.0"
-val postgresqlVersion = "42.7.12"
-val logbackVersion = "1.5.18"
-
 dependencies {
-    // Axon Framework 5 (open source only; no io.axoniq.framework artifacts)
-    implementation(platform("org.axonframework:axon-framework-bom:$axonVersion"))
-    implementation("org.axonframework:axon-messaging")
-    implementation("org.axonframework:axon-modelling")
-    implementation("org.axonframework:axon-eventsourcing")
+    // Event store, transactions and command execution; brings Axon's messaging and event sourcing along
+    implementation(project(":axon-foundation"))
+    // The domain uses Axon's modelling annotations directly
+    implementation(platform(libs.axon.bom))
+    implementation(libs.axon.modelling)
+    implementation(libs.axon.eventsourcing)
 
-    // Event store: AggregateBasedJpaEventStorageEngine on top of PostgreSQL
-    implementation("org.hibernate.orm:hibernate-core:$hibernateVersion")
-    implementation("com.zaxxer:HikariCP:$hikariVersion")
-    // Compile scope: the transaction manager asks the driver whether PostgreSQL aborted a transaction
-    implementation("org.postgresql:postgresql:$postgresqlVersion")
+    runtimeOnly(libs.logback.classic)
 
-    runtimeOnly("ch.qos.logback:logback-classic:$logbackVersion")
-
-    testImplementation(platform("org.junit:junit-bom:6.1.3"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testImplementation("org.axonframework:axon-test")
-    testImplementation("org.assertj:assertj-core:3.27.7")
-    // Architecture rules, checked by plain JUnit tests (ArchitectureTest)
-    testImplementation("com.tngtech.archunit:archunit:1.5.1")
-    // Integration tests start their own PostgreSQL in a container (Podman or Docker)
-    testImplementation(platform("org.testcontainers:testcontainers-bom:2.0.5"))
-    testImplementation("org.testcontainers:testcontainers-postgresql")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation(testFixtures(project(":axon-foundation")))
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.axon.test)
+    testImplementation(libs.assertj.core)
+    // Architecture rules, checked by plain JUnit tests (ArchitectureTest, LayeredArchitectureTest)
+    testImplementation(libs.archunit)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 application {
     mainClass = "by.akozel.accountverification.Application"
-}
-
-// Java 25 is mandatory (see README): commands run on virtual threads, which need JDK 24+ (JEP 491) to wait for a
-// pooled connection inside Axon's synchronized stream code without pinning their carrier thread.
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
-    }
 }
 
 // Loads KEY=VALUE pairs from .env (if present), so `./gradlew run` uses the same settings as compose.yaml.
@@ -70,8 +41,4 @@ fun dotEnv(): Map<String, String> {
 
 tasks.named<JavaExec>("run") {
     environment(dotEnv())
-}
-
-tasks.test {
-    useJUnitPlatform()
 }

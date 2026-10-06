@@ -1,17 +1,24 @@
 # axon-es-cqrs-showcase
 
-CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
+CQRS / Event Sourcing showcase built on Axon Framework 5. One Gradle build (wrapper, `settings.gradle.kts`, version
+catalog `gradle/libs.versions.toml` and the `java-conventions` plugin in `build-logic/` live in the repository root)
+with the modules:
 
-- `account-verification-service/` — plain Java 25 + Gradle (no Spring Boot), PostgreSQL event store.
+- `axon-foundation/` — base configuration of Axon shared by the services (`by.akozel.axon.foundation`): `persistence`
+  (PostgreSQL pool, unit-of-work transactions, JPA event store) and `messaging` (command execution on virtual threads).
+  Knows no service; its test fixtures (`…foundation.testing`) give services a PostgreSQL test environment.
+- `account-verification-service/` — plain Java 25 (no Spring Boot), depends on `axon-foundation`.
 
 ## Rules
 
-- **Layers** (packages of `by.akozel.accountverification`): `domain` (entities, their commands and events; Axon
-  annotations allowed) ← `application` (registers them with Axon) ← `infrastructure` (one sub-package per concern:
-  `persistence`, `messaging`; they don't depend on each other) and `presentation` (entry points, none yet) ←
-  `Application` in the root package (composition root, the only user of the infrastructure). Domain and application
-  never use JPA/Hibernate/JDBC/Hikari. `LayeredArchitectureTest` checks it. Keep message namespaces
-  (`by.akozel.accountverification.account`) unchanged when moving classes: they are stored event type names.
+- **Layers** of a service (packages of `by.akozel.accountverification`): `domain` (entities, their commands and events;
+  Axon annotations allowed) ← `application` (registers them with Axon) ← `infrastructure` (service-specific adapters,
+  none yet) and `presentation` (entry points, none yet) ← `Application` in the root package (composition root).
+  Only `Application` and the service's infrastructure use `axon-foundation`; domain and application never use
+  JPA/Hibernate/JDBC/Hikari. Generic Axon infrastructure goes in `axon-foundation`, never anything about a service; its
+  `persistence` and `messaging` don't depend on each other. `LayeredArchitectureTest` and `FoundationArchitectureTest`
+  check it. Keep message namespaces (`by.akozel.accountverification.account`) unchanged when moving classes: they are
+  stored event type names.
 - **Axon Framework 5 only** (`org.axonframework`, Apache 2.0, line 5.2.x). Do **not** use or suggest any
   Axoniq Framework component (`io.axoniq.framework:*`), e.g. `axoniq-postgresql`, `axon-server-connector`,
   `axoniq-distributed-messaging`, `axoniq-event-streaming`, `axoniq-dead-letter`, `axoniq-message-transformation`,
@@ -45,7 +52,7 @@ CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
   event handlers only write through the unit of work's `EntityManager`; handlers that send commands or read the event
   store go in pooled streaming processors.
 - **No `ThreadLocal`** in production code: keep the state of a unit of work in `ProcessingContext` resources.
-  `ArchitectureTest` checks it.
+  `ArchitectureTest` (service) and `FoundationArchitectureTest` (module) check it.
 - **After a refactoring, run the existing tests**: `./gradlew build` with a container runtime reachable, and check
   that no PostgreSQL test was skipped. Existing tests may only get minimal edits (wiring, a renamed API, a message
   text); name each edit and its reason in the change summary. Cover new behaviour with new tests instead of rewriting
@@ -55,10 +62,11 @@ CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
 
 ## Commands
 
-Run from `account-verification-service/` (JDK 25 must be installed):
+Run Gradle from the repository root (JDK 25 must be installed):
 
-- `cp .env.example .env && podman compose up -d` — start PostgreSQL for `./gradlew run` and manual testing
-- `./gradlew build` — compile and test. The PostgreSQL integration tests start their own PostgreSQL with
+- `cd account-verification-service && cp .env.example .env && podman compose up -d` — start PostgreSQL for
+  `./gradlew run` and manual testing (`compose.yaml`, `.env` live in the service's directory)
+- `./gradlew build` — compile and test all modules. The PostgreSQL integration tests start their own PostgreSQL with
   Testcontainers: Podman through its Docker-compatible socket (`/var/run/docker.sock` from `podman-mac-helper`, or
   `DOCKER_HOST`). They are skipped when no container runtime is reachable.
-- `./gradlew run` — start the application (reads `.env`)
+- `./gradlew run` — start the service (reads `account-verification-service/.env`)

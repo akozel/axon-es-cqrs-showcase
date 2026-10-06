@@ -7,12 +7,12 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
 import by.akozel.accountverification.application.account.AccountConfiguration;
-import by.akozel.accountverification.infrastructure.messaging.CommandExecutionConfiguration;
-import by.akozel.accountverification.infrastructure.messaging.CommandExecutionSettings;
-import by.akozel.accountverification.infrastructure.persistence.JpaEventStoreConfiguration;
-import by.akozel.accountverification.infrastructure.persistence.PostgresDatabase;
-import by.akozel.accountverification.support.PostgresContainer;
-import by.akozel.accountverification.support.RequiresPostgresContainer;
+import by.akozel.axon.foundation.messaging.CommandExecutionConfiguration;
+import by.akozel.axon.foundation.messaging.CommandExecutionSettings;
+import by.akozel.axon.foundation.persistence.JpaEventStoreConfiguration;
+import by.akozel.axon.foundation.persistence.PostgresDatabase;
+import by.akozel.axon.foundation.testing.PostgresContainer;
+import by.akozel.axon.foundation.testing.RequiresPostgresContainer;
 import org.axonframework.common.configuration.AxonConfiguration;
 import org.axonframework.eventsourcing.configuration.EventSourcingConfigurer;
 import org.axonframework.messaging.commandhandling.gateway.CommandGateway;

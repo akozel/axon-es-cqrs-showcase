@@ -14,11 +14,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
-import by.akozel.accountverification.support.PostgresAxonEnvironment;
-import by.akozel.accountverification.support.RequiresPostgresContainer;
+import by.akozel.accountverification.application.account.AccountConfiguration;
+import by.akozel.axon.foundation.testing.PostgresAxonEnvironment;
+import by.akozel.axon.foundation.testing.RequiresPostgresContainer;
 import org.axonframework.eventsourcing.annotation.EventTag;
 import org.axonframework.eventsourcing.eventstore.AppendEventsTransactionRejectedException;
 import org.axonframework.eventsourcing.eventstore.SourcingCondition;
@@ -49,7 +51,7 @@ class AccountEventStorePostgresTest {
 
     @BeforeAll
     static void start() {
-        env = PostgresAxonEnvironment.start();
+        env = PostgresAxonEnvironment.start(pool -> {}, AccountConfiguration::configure);
     }
 
     @AfterAll
@@ -71,7 +73,7 @@ class AccountEventStorePostgresTest {
         @Test
         void startAtZeroAndIncreaseByOnePerEventOfTheSameAccount() throws Exception {
             // given
-            String ssn = PostgresAxonEnvironment.randomSsn();
+            String ssn = randomSsn();
 
             // when
             appendNote(ssn, 1, null).get(30, TimeUnit.SECONDS);
@@ -85,8 +87,8 @@ class AccountEventStorePostgresTest {
         @Test
         void areIndependentPerAccount() throws Exception {
             // given
-            String first = PostgresAxonEnvironment.randomSsn();
-            String second = PostgresAxonEnvironment.randomSsn();
+            String first = randomSsn();
+            String second = randomSsn();
 
             // when
             appendNote(first, 1, null).get(30, TimeUnit.SECONDS);
@@ -105,7 +107,7 @@ class AccountEventStorePostgresTest {
         @Test
         void rejectsOneOfTwoConcurrentFirstEventsOfTheSameAccount() {
             // given: nothing is stored for the account yet
-            String ssn = PostgresAxonEnvironment.randomSsn();
+            String ssn = randomSsn();
 
             // when: both writers read the (empty) account before either one writes
             List<Throwable> outcomes = raceTwoAppends(ssn);
@@ -118,7 +120,7 @@ class AccountEventStorePostgresTest {
         @Test
         void rejectsOneOfTwoConcurrentNextEventsOfAnExistingAccount() throws Exception {
             // given: the account already has event 0
-            String ssn = PostgresAxonEnvironment.randomSsn();
+            String ssn = randomSsn();
             appendNote(ssn, 0, null).get(30, TimeUnit.SECONDS);
 
             // when: both writers read it at event 0 and both want to append event 1
@@ -132,7 +134,7 @@ class AccountEventStorePostgresTest {
         @Test
         void letsTheLoserSucceedWhenItRetriesAfterRereadingTheAccount() throws Exception {
             // given: a lost race on an existing account
-            String ssn = PostgresAxonEnvironment.randomSsn();
+            String ssn = randomSsn();
             appendNote(ssn, 0, null).get(30, TimeUnit.SECONDS);
             assertExactlyOneRejectedByOptimisticLock(raceTwoAppends(ssn));
 
@@ -146,8 +148,8 @@ class AccountEventStorePostgresTest {
         @Test
         void doesNotRejectConcurrentEventsOfDifferentAccounts() throws Exception {
             // given
-            String first = PostgresAxonEnvironment.randomSsn();
-            String second = PostgresAxonEnvironment.randomSsn();
+            String first = randomSsn();
+            String second = randomSsn();
             CyclicBarrier bothHaveRead = new CyclicBarrier(2);
             ExecutorService executor = Executors.newFixedThreadPool(2);
             try {
@@ -174,7 +176,7 @@ class AccountEventStorePostgresTest {
             // given
             Set<String> ssns = new HashSet<>();
             while (ssns.size() < 100) {
-                ssns.add(PostgresAxonEnvironment.randomSsn());
+                ssns.add(randomSsn());
             }
             ExecutorService executor = Executors.newFixedThreadPool(16);
             try {
@@ -199,7 +201,7 @@ class AccountEventStorePostgresTest {
         @Test
         void createsTheSameAccountExactlyOnceWhenManyCommandsRaceForIt() throws Exception {
             // given
-            String ssn = PostgresAxonEnvironment.randomSsn();
+            String ssn = randomSsn();
             int contenders = 20;
             CyclicBarrier startTogether = new CyclicBarrier(contenders);
             ExecutorService executor = Executors.newFixedThreadPool(contenders);
@@ -305,5 +307,10 @@ class AccountEventStorePostgresTest {
             chain.add(current);
         }
         return chain;
+    }
+
+    private static String randomSsn() {
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        return "%03d-%02d-%04d".formatted(random.nextInt(1000), random.nextInt(100), random.nextInt(10000));
     }
 }
