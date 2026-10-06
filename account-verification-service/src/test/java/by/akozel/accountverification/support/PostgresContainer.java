@@ -2,7 +2,7 @@ package by.akozel.accountverification.support;
 
 import java.util.Map;
 
-import by.akozel.accountverification.infrastructure.DatabaseSettings;
+import by.akozel.accountverification.infrastructure.persistence.DatabaseSettings;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;

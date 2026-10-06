@@ -6,6 +6,12 @@ CQRS / Event Sourcing showcase built on Axon Framework 5. Modules:
 
 ## Rules
 
+- **Layers** (packages of `by.akozel.accountverification`): `domain` (entities, their commands and events; Axon
+  annotations allowed) ← `application` (registers them with Axon) ← `infrastructure` (one sub-package per concern:
+  `persistence`, `messaging`; they don't depend on each other) and `presentation` (entry points, none yet) ←
+  `Application` in the root package (composition root, the only user of the infrastructure). Domain and application
+  never use JPA/Hibernate/JDBC/Hikari. `LayeredArchitectureTest` checks it. Keep message namespaces
+  (`by.akozel.accountverification.account`) unchanged when moving classes: they are stored event type names.
 - **Axon Framework 5 only** (`org.axonframework`, Apache 2.0, line 5.2.x). Do **not** use or suggest any
   Axoniq Framework component (`io.axoniq.framework:*`), e.g. `axoniq-postgresql`, `axon-server-connector`,
   `axoniq-distributed-messaging`, `axoniq-event-streaming`, `axoniq-dead-letter`, `axoniq-message-transformation`,

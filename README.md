@@ -24,6 +24,27 @@ cp .env.example .env && podman compose up -d   # PostgreSQL for ./gradlew run
 ./gradlew run                                   # start the application (reads .env)
 ```
 
+## Architecture
+
+`account-verification-service` is split into four layers, as packages of `by.akozel.accountverification`:
+
+| Layer          | Package                          | Contents                                                                   |
+|----------------|----------------------------------|----------------------------------------------------------------------------|
+| domain         | `domain.account`                 | event-sourced entities with their commands, events and rules (`Account`)   |
+| application    | `application.account`            | registers the entities and handlers with Axon (`AccountConfiguration`)     |
+| infrastructure | `infrastructure.persistence`     | PostgreSQL pool, unit-of-work transactions, JPA event store                |
+|                | `infrastructure.messaging`       | command execution on virtual threads with an admission limit               |
+| presentation   | `presentation`                   | entry points (HTTP, CLI, …); none yet                                      |
+
+`Application` in the root package is the entry point and composition root: it reads the settings and wires the layers
+together. Dependencies point inward only: domain ← application ← infrastructure / presentation ← `Application`. Only
+`Application` uses the infrastructure, and the infrastructure sub-packages don't depend on each other. The domain keeps
+Axon's modelling annotations, but neither it nor the application layer may use JPA, Hibernate, JDBC or the connection
+pool. `LayeredArchitectureTest` checks all of this.
+
+The namespace of a message (`@Event`/`@Command(namespace = …)`) is part of its stored type name, not the Java
+package: it stays `by.akozel.accountverification.account` so that events already written can still be read.
+
 ## Configuration
 
 `.env` (git-ignored, copied from `.env.example`) is read by `compose.yaml` and by `./gradlew run`. Tests don't read it.

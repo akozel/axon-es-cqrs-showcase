@@ -11,11 +11,11 @@ import java.util.function.Function;
 import javax.management.JMException;
 import javax.management.ObjectName;
 
-import by.akozel.accountverification.account.AccountConfiguration;
-import by.akozel.accountverification.infrastructure.CommandExecutionConfiguration;
-import by.akozel.accountverification.infrastructure.CommandExecutionSettings;
-import by.akozel.accountverification.infrastructure.JpaEventStoreConfiguration;
-import by.akozel.accountverification.infrastructure.PostgresDatabase;
+import by.akozel.accountverification.application.account.AccountConfiguration;
+import by.akozel.accountverification.infrastructure.messaging.CommandExecutionConfiguration;
+import by.akozel.accountverification.infrastructure.messaging.CommandExecutionSettings;
+import by.akozel.accountverification.infrastructure.persistence.JpaEventStoreConfiguration;
+import by.akozel.accountverification.infrastructure.persistence.PostgresDatabase;
 import com.zaxxer.hikari.HikariConfig;
 import jakarta.persistence.EntityManager;
 import org.axonframework.common.configuration.AxonConfiguration;
