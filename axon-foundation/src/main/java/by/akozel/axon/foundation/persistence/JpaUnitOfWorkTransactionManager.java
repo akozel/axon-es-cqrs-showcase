@@ -72,7 +72,7 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
     @Override
     public void attachToProcessingLifecycle(ProcessingLifecycle lifecycle) {
         lifecycle.runOnPreInvocation(context -> {
-            Scope scope = new Scope(context);
+            Scope scope = new Scope();
             EntityManagerExecutor executor = new EntityManagerExecutor(scope::entityManager);
             context.putResource(JpaTransactionalExecutorProvider.SUPPLIER_KEY, () -> executor);
             context.putResource(scopeKey, scope);
@@ -117,7 +117,7 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
     /** Safe from any thread: reads only what {@link Scope} publishes for this purpose. */
     private boolean holdsOpenTransaction(ProcessingContext context) {
         Scope scope = context.getResource(scopeKey);
-        return scope != null && scope.transactionOpen && !scope.unitOfWork.isCompleted();
+        return scope != null && scope.transactionOpen;
     }
 
     /**
@@ -126,15 +126,13 @@ public class JpaUnitOfWorkTransactionManager implements TransactionManager {
      */
     private final class Scope {
 
-        private final ProcessingLifecycle unitOfWork;
         private EntityManager entityManager;
         private boolean finished; // the commit step ran or the unit of work failed
-        /** From the start of the transaction until it is released; what the check on the context reads. */
+        /**
+         * From the start of the transaction until it is released; what the check on the context reads. Commit,
+         * rollback and close all release it, so it is never left set once the unit of work has completed.
+         */
         private volatile boolean transactionOpen;
-
-        private Scope(ProcessingLifecycle unitOfWork) {
-            this.unitOfWork = unitOfWork;
-        }
 
         private EntityManager entityManager() {
             if (finished) {

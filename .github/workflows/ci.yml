@@ -1,0 +1,86 @@
+# Builds every module, runs the tests (PostgreSQL ones with Testcontainers on the runner's Docker) and checks the
+# coverage minimum (see CLAUDE.md). The HTML coverage report is attached to every run; for main it is also published
+# on GitHub Pages (Settings → Pages → Source: GitHub Actions), even when the minimum is missed.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      report: ${{ steps.site.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Java 25 is mandatory: the Gradle toolchain asks for it and finds it through JAVA_HOME
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+
+      # Caches Gradle and validates the wrapper
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Build
+        run: ./gradlew assemble testClasses
+
+      # Tests, coverage report and the 95% check. A skipped PostgreSQL test lowers the coverage and fails it.
+      - name: Test and check coverage
+        run: ./gradlew check
+
+      - name: Collect coverage report
+        id: site
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/coverage_site.py build/coverage-site
+
+      - name: Attach coverage report to the run
+        if: ${{ !cancelled() && steps.site.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: build/coverage-site
+
+      - name: Prepare coverage report for GitHub Pages
+        if: ${{ !cancelled() && steps.site.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/coverage-site
+
+  pages:
+    name: Publish coverage report
+    needs: build
+    if: ${{ !cancelled() && needs.build.outputs.report == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Link the report
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          echo "Coverage report: $PAGE_URL" >> "$GITHUB_STEP_SUMMARY"

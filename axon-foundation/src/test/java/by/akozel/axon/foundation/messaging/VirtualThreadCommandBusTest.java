@@ -5,10 +5,13 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -148,6 +151,32 @@ class VirtualThreadCommandBusTest {
             // then
             assertThat(next).isSameAs(RESULT);
         }
+
+        @Test
+        void returnsThePermitWhenNoThreadCanBeStartedForTheCommand() throws Exception {
+            // given
+            RejectedExecutionException noThread = new RejectedExecutionException("no thread");
+            VirtualThreadCommandBus noThreads = new VirtualThreadCommandBus(
+                    delegate, new CommandExecutionSettings(1, 1), Duration.ofSeconds(10), runnable -> {
+                        throw noThread;
+                    });
+
+            // when
+            CompletableFuture<CommandResultMessage> failed = noThreads.dispatch(COMMAND, null);
+
+            // then: it failed at once, and the only permit is free again for a caller that needs no new thread
+            assertThat(failed).isCompletedExceptionally();
+            assertThat(causeOf(failed)).isSameAs(noThread);
+            CompletableFuture<CommandResultMessage> next = new CompletableFuture<>();
+            Thread.ofVirtual().start(() -> noThreads.dispatch(COMMAND, null).whenComplete((result, failure) -> {
+                if (failure == null) {
+                    next.complete(result);
+                } else {
+                    next.completeExceptionally(failure);
+                }
+            }));
+            assertThat(next.get(10, TimeUnit.SECONDS)).isSameAs(RESULT);
+        }
     }
 
     @Nested
@@ -184,6 +213,51 @@ class VirtualThreadCommandBusTest {
 
             // when / then
             assertThat(causeOf(bus.dispatch(COMMAND, null))).isSameAs(error);
+        }
+
+        @Test
+        void unwrapsAFailureTheDelegateWrappedInACompletionException() throws Exception {
+            // given: e.g. a future derived with thenApply from one that failed
+            IllegalArgumentException failure = new IllegalArgumentException("handler failed");
+            delegate.answer = command -> CompletableFuture.failedFuture(new CompletionException(failure));
+
+            // when / then
+            assertThat(failureAsCompleted(bus.dispatch(COMMAND, null))).isSameAs(failure);
+        }
+
+        @Test
+        void passesACompletionExceptionWithoutCauseThroughInsteadOfHanging() throws Exception {
+            // given: unwrapping it would complete the result with null, which never completes it
+            CompletionException withoutCause = new CompletionException((Throwable) null);
+            delegate.answer = command -> CompletableFuture.failedFuture(withoutCause);
+
+            // when / then
+            assertThat(failureAsCompleted(bus.dispatch(COMMAND, null))).isSameAs(withoutCause);
+        }
+
+        /** The failure exactly as the future was completed with; get() and join() would unwrap or wrap it. */
+        private static Throwable failureAsCompleted(CompletableFuture<?> future) throws Exception {
+            return future.handle((result, failure) -> failure).get(10, TimeUnit.SECONDS);
+        }
+
+        @Test
+        void describesItselfAsAWrapperOfTheDelegateWithItsLimit() {
+            // given
+            List<String> described = new CopyOnWriteArrayList<>();
+            ComponentDescriptor descriptor = (ComponentDescriptor) Proxy.newProxyInstance(
+                    ComponentDescriptor.class.getClassLoader(), new Class<?>[]{ComponentDescriptor.class},
+                    (proxy, method, args) -> {
+                        described.add(method.getName() + Arrays.toString(args));
+                        return null;
+                    });
+
+            // when
+            bus.describeTo(descriptor);
+
+            // then
+            assertThat(described).containsExactly(
+                    "describeWrapperOf[" + delegate + "]",
+                    "describeProperty[maxConcurrentCommands, 10 per CPU x 1 CPUs = 10]");
         }
 
         @Test
@@ -241,6 +315,26 @@ class VirtualThreadCommandBusTest {
 
             // when / then
             CompletableFuture.runAsync(bus::shutdown).get(10, TimeUnit.SECONDS);
+        }
+
+        @Test
+        void stopsWaitingAndKeepsTheInterruptWhenInterrupted() throws Exception {
+            // given: a command that never finishes, and a shutdown that would wait for it
+            VirtualThreadCommandBus bus = new VirtualThreadCommandBus(
+                    delegate, new CommandExecutionSettings(1, 1), Duration.ofMinutes(10));
+            delegate.answer = command -> new CompletableFuture<>();
+            bus.dispatch(COMMAND, null);
+            awaitDispatches(1);
+
+            // when
+            CompletableFuture<Boolean> interruptKept = CompletableFuture.supplyAsync(() -> {
+                Thread.currentThread().interrupt();
+                bus.shutdown();
+                return Thread.interrupted();
+            });
+
+            // then
+            assertThat(interruptKept.get(10, TimeUnit.SECONDS)).isTrue();
         }
     }
 

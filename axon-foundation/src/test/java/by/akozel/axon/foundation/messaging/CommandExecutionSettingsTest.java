@@ -55,6 +55,34 @@ class CommandExecutionSettingsTest {
     }
 
     @Test
+    void usesTheDefaultForABlankValue() {
+        // when
+        CommandExecutionSettings settings = CommandExecutionSettings.fromEnvironment(
+                Map.of(CommandExecutionSettings.VARIABLE, " "), 2);
+
+        // then
+        assertThat(settings.concurrencyPerCpu()).isEqualTo(CommandExecutionSettings.DEFAULT_CONCURRENCY_PER_CPU);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1})
+    void rejectsANumberOfProcessorsThatIsNotPositive(int availableProcessors) {
+        // when / then
+        assertThatThrownBy(() -> new CommandExecutionSettings(1000, availableProcessors))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("availableProcessors");
+    }
+
+    @Test
+    void readsTheProcessorsAvailableToTheJvm() {
+        // when
+        CommandExecutionSettings settings = CommandExecutionSettings.fromEnvironment();
+
+        // then
+        assertThat(settings.availableProcessors()).isEqualTo(Runtime.getRuntime().availableProcessors());
+    }
+
+    @Test
     void describesTheLimitWithItsFactors() {
         // when
         String description = new CommandExecutionSettings(1000, 3).toString();

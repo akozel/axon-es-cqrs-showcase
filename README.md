@@ -49,6 +49,26 @@ the connection pool. `LayeredArchitectureTest` checks the service, `FoundationAr
 The namespace of a message (`@Event`/`@Command(namespace = …)`) is part of its stored type name, not the Java
 package: it stays `by.akozel.accountverification.account` so that events already written can still be read.
 
+## Test coverage
+
+Every module measures how much of its main code its own tests run, with JaCoCo. `./gradlew test` writes the report
+to `<module>/build/reports/jacoco/test/html/index.html`: totals per package and class, and the sources with covered
+lines in green, partly covered branches in yellow and code never run in red. `./gradlew check` (part of
+`./gradlew build`) fails when instruction, branch or line coverage is below **95%**, for the module and for each class.
+The entry point `Application` is the only class left out. The PostgreSQL tests count too, so a build without a
+container runtime fails the check.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`, on Ubuntu with JDK 25 and the
+runner's Docker for Testcontainers. First `./gradlew assemble testClasses`, then `./gradlew check` (tests, coverage
+report, 95% check). The run's summary shows the coverage per module, and the HTML report is attached to the run as
+the `coverage-report` artifact.
+
+For `main` the report is also published on GitHub Pages: **https://akozel.github.io/axon-es-cqrs-showcase/**, an
+index of the modules linking to their reports. It is published even when the 95% check fails, so the missing code
+can be seen. One-time setup: *Settings → Pages → Build and deployment → Source: GitHub Actions*.
+
 ## Configuration
 
 `.env` (git-ignored, copied from `.env.example`) is read by `compose.yaml` and by `./gradlew run`. Tests don't read it.

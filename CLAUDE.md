@@ -57,6 +57,19 @@ with the modules:
   that no PostgreSQL test was skipped. Existing tests may only get minimal edits (wiring, a renamed API, a message
   text); name each edit and its reason in the change summary. Cover new behaviour with new tests instead of rewriting
   existing ones.
+- **Test coverage ≥ 95%** (JaCoCo, configured in `java-conventions`, version in the catalog). `check` (so
+  `./gradlew build`) fails when **INSTRUCTION, BRANCH or LINE** coverage is below 95%, for a module as a whole *and*
+  for each of its classes. For a class with fewer than 20 branches or lines, that means none may be missed. Only a
+  module's own tests count: code of `axon-foundation` that the service's tests run doesn't. METHOD, CLASS and
+  COMPLEXITY are shown in the report but not enforced. Never lower the threshold, drop a counter or exclude a class to
+  get the build green: write the missing test. A branch no test can reach (redundant defensive code) is removed, not
+  excluded. Exclusions go only through `coverage { excludedClasses }` in the module's build script, one class at a time
+  with the reason; today only `Application` (reads the real environment, then blocks forever). Without a container
+  runtime the PostgreSQL tests are skipped and the coverage check fails. That is intended: it is not a green build.
+- **CI** (`.github/workflows/ci.yml`, GitHub Actions): `./gradlew assemble testClasses`, then `./gradlew check`, on
+  Ubuntu with Docker. It publishes the coverage report as a run artifact and, for `main`, on GitHub Pages
+  (https://akozel.github.io/axon-es-cqrs-showcase/), built by `.github/scripts/coverage_site.py`, which picks up every
+  module's report by itself. Keep its JDK in step with the toolchain. Don't let CI skip tests or the coverage check.
 - Local infrastructure runs on Podman (`podman compose`). Configuration lives in `.env` (git-ignored); keep
   `.env.example` in sync when adding variables. Tests don't read `.env`.
 
@@ -68,5 +81,7 @@ Run Gradle from the repository root (JDK 25 must be installed):
   `./gradlew run` and manual testing (`compose.yaml`, `.env` live in the service's directory)
 - `./gradlew build` — compile and test all modules. The PostgreSQL integration tests start their own PostgreSQL with
   Testcontainers: Podman through its Docker-compatible socket (`/var/run/docker.sock` from `podman-mac-helper`, or
-  `DOCKER_HOST`). They are skipped when no container runtime is reachable.
+  `DOCKER_HOST`). They are skipped when no container runtime is reachable, and then the coverage check fails.
+- `./gradlew test` — run the tests and write the coverage report: `<module>/build/reports/jacoco/test/html/index.html`
+  (HTML with the sources highlighted line by line; XML next to it). `./gradlew check` also verifies the 95% minimum.
 - `./gradlew run` — start the service (reads `account-verification-service/.env`)

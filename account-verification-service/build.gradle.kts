@@ -27,6 +27,11 @@ application {
     mainClass = "by.akozel.accountverification.Application"
 }
 
+coverage {
+    // The entry point reads the real environment and then blocks forever; the parts it wires together are tested.
+    excludedClasses.add("by/akozel/accountverification/Application.class")
+}
+
 // Loads KEY=VALUE pairs from .env (if present), so `./gradlew run` uses the same settings as compose.yaml.
 // Real environment variables are not overridden. Tests don't read it: they start PostgreSQL with Testcontainers.
 fun dotEnv(): Map<String, String> {

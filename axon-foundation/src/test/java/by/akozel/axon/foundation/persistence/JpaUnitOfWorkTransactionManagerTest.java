@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
+import java.sql.Connection;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,6 +19,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.EntityTransaction;
 import jakarta.persistence.PersistenceException;
+import jakarta.persistence.RollbackException;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.axonframework.messaging.commandhandling.CommandMessage;
 import org.axonframework.messaging.commandhandling.GenericCommandMessage;
@@ -29,6 +31,8 @@ import org.axonframework.messaging.core.unitofwork.ProcessingContext;
 import org.axonframework.messaging.core.unitofwork.UnitOfWorkFactory;
 import org.axonframework.messaging.core.unitofwork.transaction.TransactionManager;
 import org.axonframework.messaging.core.unitofwork.transaction.jpa.JpaTransactionalExecutorProvider;
+import org.hibernate.Session;
+import org.hibernate.jdbc.ReturningWork;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -83,10 +87,55 @@ class JpaUnitOfWorkTransactionManagerTest {
             // then
             assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "commit", "close");
         }
+
+        @Test
+        void commitsOnADatabaseOtherThanPostgres() throws Exception {
+            // given: its connection cannot tell whether the database aborted the transaction
+            jpa.hibernateOnAnotherDatabase = true;
+
+            // when
+            run(context -> useEntityManager(context));
+
+            // then
+            assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "commit", "close");
+        }
     }
 
     @Nested
     class WhenUnitOfWorkFails {
+
+        @Test
+        void neitherRollsBackNorClosesAnEntityManagerThatWasClosedElsewhere() {
+            // when
+            failureOf(context -> {
+                useEntityManager(context).close();
+                throw new IllegalStateException("boom");
+            });
+
+            // then: the only close is the body's own
+            assertThat(jpa.calls).containsExactly("createEntityManager", "begin", "close");
+        }
+
+        @Test
+        void keepsAFailedRollbackOfARollbackOnlyTransactionWithTheFailure() {
+            // given
+            jpa.rollbackOnly = true;
+            jpa.rollbackFails = true;
+
+            // when
+            Throwable failure = failureOf(context -> useEntityManager(context));
+
+            // then
+            Throwable rollbackOnly = failure;
+            while (rollbackOnly != null && !(rollbackOnly instanceof RollbackException)) {
+                rollbackOnly = rollbackOnly.getCause();
+            }
+            assertThat(rollbackOnly).hasMessageContaining("rollback-only");
+            assertThat(rollbackOnly.getSuppressed())
+                    .singleElement(InstanceOfAssertFactories.THROWABLE)
+                    .hasMessage("rollback failed");
+            assertThat(jpa.calls).doesNotContain("commit").endsWith("close");
+        }
 
         @Test
         void rollsBackAndClosesWhenTheBodyFailsAfterUsingTheEntityManager() {
@@ -281,6 +330,20 @@ class JpaUnitOfWorkTransactionManagerTest {
             assertThat(passed).isTrue();
         }
 
+        @Test
+        void passFromAUnitOfWorkThatThisManagerDoesNotManage() throws Exception {
+            // given
+            UnitOfWorkFactory unmanaged = MessagingConfigurer.create().build().getComponent(UnitOfWorkFactory.class);
+
+            // when
+            boolean passed = unmanaged.create()
+                                      .executeWithResult(context -> CompletableFuture.completedFuture(passes(context)))
+                                      .get(10, TimeUnit.SECONDS);
+
+            // then
+            assertThat(passed).isTrue();
+        }
+
         /** Whether the interceptor passes a command sent with the given context on; a refusal must explain itself. */
         private boolean passes(ProcessingContext context) {
             AtomicBoolean proceeded = new AtomicBoolean();
@@ -339,8 +402,24 @@ class JpaUnitOfWorkTransactionManagerTest {
         volatile boolean commitFails;
         volatile boolean rollbackFails;
         volatile boolean rollbackOnly;
+        /** Unwraps to a Hibernate session whose JDBC connection is not PostgreSQL's; otherwise no Hibernate at all. */
+        volatile boolean hibernateOnAnotherDatabase;
 
         private volatile boolean open;
+
+        private final Connection otherDatabase = proxy(Connection.class, (proxy, method, args) -> {
+            if (method.getName().equals("isWrapperFor")) {
+                return false;
+            }
+            throw new UnsupportedOperationException(method.toString());
+        });
+
+        private final Session session = proxy(Session.class, (proxy, method, args) -> {
+            if (method.getName().equals("doReturningWork")) {
+                return ((ReturningWork<?>) args[0]).execute(otherDatabase);
+            }
+            throw new UnsupportedOperationException(method.toString());
+        });
         private volatile boolean active;
 
         private final EntityTransaction transaction = proxy(EntityTransaction.class, (proxy, method, args) -> {
@@ -395,7 +474,12 @@ class JpaUnitOfWorkTransactionManagerTest {
                 case "toString" -> {
                     return "FakeEntityManager";
                 }
-                case "unwrap" -> throw new PersistenceException("not a Hibernate session");
+                case "unwrap" -> {
+                    if (hibernateOnAnotherDatabase && args[0] == Session.class) {
+                        return session;
+                    }
+                    throw new PersistenceException("not a Hibernate session");
+                }
                 case "hashCode" -> {
                     return System.identityHashCode(proxy);
                 }

@@ -97,5 +97,33 @@ class AccountTest {
                    .exception(IllegalArgumentException.class, "Account holder name must not be blank")
                    .noEvents();
         }
+
+        @Test
+        void rejectsMissingSsn() {
+            // given
+            fixture.given()
+                   .noPriorActivity()
+                   // when
+                   .when()
+                   .command(new CreateAccount(null, "John Doe"))
+                   // then
+                   .then()
+                   .exception(IllegalArgumentException.class, "SSN must match NNN-NN-NNNN")
+                   .noEvents();
+        }
+
+        @Test
+        void rejectsMissingHolderName() {
+            // given
+            fixture.given()
+                   .noPriorActivity()
+                   // when
+                   .when()
+                   .command(new CreateAccount(SSN, null))
+                   // then
+                   .then()
+                   .exception(IllegalArgumentException.class, "Account holder name must not be blank")
+                   .noEvents();
+        }
     }
 }

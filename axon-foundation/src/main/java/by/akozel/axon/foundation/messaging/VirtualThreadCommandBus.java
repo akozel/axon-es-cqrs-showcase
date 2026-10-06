@@ -43,7 +43,7 @@ public class VirtualThreadCommandBus implements CommandBus {
     private final CommandExecutionSettings settings;
     private final Duration shutdownTimeout;
     private final Semaphore permits;
-    private final ThreadFactory virtualThreads = Thread.ofVirtual().name("command-", 0).factory();
+    private final ThreadFactory virtualThreads;
     private volatile boolean accepting = true;
 
     public VirtualThreadCommandBus(CommandBus delegate, CommandExecutionSettings settings) {
@@ -51,10 +51,16 @@ public class VirtualThreadCommandBus implements CommandBus {
     }
 
     VirtualThreadCommandBus(CommandBus delegate, CommandExecutionSettings settings, Duration shutdownTimeout) {
+        this(delegate, settings, shutdownTimeout, Thread.ofVirtual().name("command-", 0).factory());
+    }
+
+    VirtualThreadCommandBus(CommandBus delegate, CommandExecutionSettings settings, Duration shutdownTimeout,
+                            ThreadFactory virtualThreads) {
         this.delegate = delegate;
         this.settings = settings;
         this.shutdownTimeout = shutdownTimeout;
         this.permits = new Semaphore(settings.maxConcurrentCommands());
+        this.virtualThreads = virtualThreads;
     }
 
     @Override
@@ -73,11 +79,11 @@ public class VirtualThreadCommandBus implements CommandBus {
         }
         CompletableFuture<CommandResultMessage> result = new CompletableFuture<>();
         if (Thread.currentThread().isVirtual()) {
-            relay(dispatchHoldingPermit(command), result);
+            dispatchHoldingPermit(command, result);
             return result;
         }
         try {
-            virtualThreads.newThread(() -> relay(dispatchHoldingPermit(command), result)).start();
+            virtualThreads.newThread(() -> dispatchHoldingPermit(command, result)).start();
         } catch (Throwable e) {
             permits.release();
             return CompletableFuture.failedFuture(e);
@@ -85,29 +91,30 @@ public class VirtualThreadCommandBus implements CommandBus {
         return result;
     }
 
-    /** Dispatches an admitted command and returns its permit once it completes, however it ends. */
-    private CompletableFuture<CommandResultMessage> dispatchHoldingPermit(CommandMessage command) {
+    /**
+     * Dispatches an admitted command, returns its permit once it completes, however it ends, and then completes
+     * {@code result} with its outcome.
+     */
+    private void dispatchHoldingPermit(CommandMessage command, CompletableFuture<CommandResultMessage> result) {
         CompletableFuture<CommandResultMessage> dispatched;
         try {
             dispatched = delegate.dispatch(command, null);
         } catch (Throwable e) { // an Error that escaped would leave the caller waiting forever
             dispatched = CompletableFuture.failedFuture(e);
         }
-        return dispatched.whenComplete((ignored, failure) -> permits.release());
-    }
-
-    private static void relay(CompletableFuture<CommandResultMessage> source,
-                              CompletableFuture<CommandResultMessage> target) {
-        source.whenComplete((result, failure) -> {
+        dispatched.whenComplete((value, failure) -> {
+            permits.release();
             if (failure == null) {
-                target.complete(result);
+                result.complete(value);
             } else {
-                target.completeExceptionally(
-                        failure instanceof CompletionException && failure.getCause() != null
-                                ? failure.getCause()
-                                : failure);
+                result.completeExceptionally(unwrap(failure));
             }
         });
+    }
+
+    /** The failure a future of the delegate wrapped in a {@link CompletionException}; never {@code null}. */
+    private static Throwable unwrap(Throwable failure) {
+        return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
     }
 
     @Override
