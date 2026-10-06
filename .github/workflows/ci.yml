@@ -1,6 +1,8 @@
-# Builds every module, runs the tests (PostgreSQL ones with Testcontainers on the runner's Docker) and checks the
-# coverage minimum (see CLAUDE.md). The HTML coverage report is attached to every run; for main it is also published
-# on GitHub Pages (Settings → Pages → Source: GitHub Actions), even when the minimum is missed.
+# Pipeline: build → test → coverage → pages (main only). Each stage works on what the previous one produced: the tests
+# run on the classes the build compiled, the coverage report and check use the execution data the tests recorded
+# (with those same classes), so nothing is compiled or tested twice. The coverage minimum is described in CLAUDE.md.
+# The HTML coverage report is attached to every run; for main it is also published on GitHub Pages
+# (Settings → Pages → Source: GitHub Actions), even when the minimum is missed.
 name: CI
 
 on:
@@ -18,11 +20,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build, test and coverage
+    name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    outputs:
-      report: ${{ steps.site.outcome == 'success' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -35,26 +35,103 @@ jobs:
       # Caches Gradle and validates the wrapper
       - uses: gradle/actions/setup-gradle@v6
 
-      - name: Build
+      - name: Compile and assemble
         run: ./gradlew assemble testClasses
 
-      # Tests, coverage report and the 95% check. A skipped PostgreSQL test lowers the coverage and fails it.
-      - name: Test and check coverage
-        run: ./gradlew check
+      - name: Hand the classes to the next stages
+        uses: actions/upload-artifact@v7
+        with:
+          name: classes
+          path: '*/build/classes/java/'
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Collect coverage report
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: classes
+
+      # The PostgreSQL tests start their database with Testcontainers on the runner's Docker. The compile tasks are
+      # left out so that the classes of the build stage are tested; the coverage report is the next stage's job.
+      - name: Run the tests
+        run: >-
+          ./gradlew test
+          -x compileJava -x compileTestJava -x compileTestFixturesJava
+          -x jacocoTestReport
+
+      - name: Hand the execution data to the coverage stage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-data
+          path: '*/build/jacoco/test.exec'
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Attach the test results to the run
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            */build/reports/tests/test/
+            */build/test-results/test/
+          if-no-files-found: ignore
+
+  coverage:
+    name: Coverage
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      report: ${{ steps.site.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+
+      # JaCoCo matches execution data to classes by their exact bytes: use the very classes the tests ran
+      - uses: actions/download-artifact@v8
+        with:
+          name: classes
+      - uses: actions/download-artifact@v8
+        with:
+          name: coverage-data
+
+      - name: Write the coverage report
+        run: ./gradlew jacocoTestReport -x test -x compileJava
+
+      # A test skipped in the test stage (e.g. PostgreSQL) shows up here as missing coverage
+      - name: Check the coverage minimum
+        run: ./gradlew jacocoTestCoverageVerification -x test -x compileJava
+
+      - name: Collect the coverage report
         id: site
         if: ${{ !cancelled() }}
         run: python3 .github/scripts/coverage_site.py build/coverage-site
 
-      - name: Attach coverage report to the run
+      - name: Attach the coverage report to the run
         if: ${{ !cancelled() && steps.site.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: build/coverage-site
 
-      - name: Prepare coverage report for GitHub Pages
+      - name: Prepare the coverage report for GitHub Pages
         if: ${{ !cancelled() && steps.site.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/upload-pages-artifact@v5
         with:
@@ -62,8 +139,8 @@ jobs:
 
   pages:
     name: Publish coverage report
-    needs: build
-    if: ${{ !cancelled() && needs.build.outputs.report == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: coverage
+    if: ${{ !cancelled() && needs.coverage.outputs.report == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

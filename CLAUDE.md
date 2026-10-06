@@ -66,10 +66,15 @@ with the modules:
   excluded. Exclusions go only through `coverage { excludedClasses }` in the module's build script, one class at a time
   with the reason; today only `Application` (reads the real environment, then blocks forever). Without a container
   runtime the PostgreSQL tests are skipped and the coverage check fails. That is intended: it is not a green build.
-- **CI** (`.github/workflows/ci.yml`, GitHub Actions): `./gradlew assemble testClasses`, then `./gradlew check`, on
-  Ubuntu with Docker. It publishes the coverage report as a run artifact and, for `main`, on GitHub Pages
-  (https://akozel.github.io/axon-es-cqrs-showcase/), built by `.github/scripts/coverage_site.py`, which picks up every
-  module's report by itself. Keep its JDK in step with the toolchain. Don't let CI skip tests or the coverage check.
+- **CI** (`.github/workflows/ci.yml`, GitHub Actions, Ubuntu with Docker) is a pipeline of separate jobs: build
+  (`assemble testClasses`, hands on `*/build/classes/java/`) → test (`test` on those classes with the compile tasks
+  excluded, hands on `*/build/jacoco/test.exec`) → coverage (`jacocoTestReport`, `jacocoTestCoverageVerification`
+  with `test` and `compileJava` excluded) → pages (`main` only). The coverage report goes to the run as an artifact
+  and, for `main`, to GitHub Pages (https://akozel.github.io/axon-es-cqrs-showcase/), collected by
+  `.github/scripts/coverage_site.py`, which finds every module's report on its own. A new source set or verification
+  task needs the matching change there: its `compile…Java` task in the test stage's `-x` list, a new `check`
+  task in a stage, since CI doesn't run `check` as a whole. Keep its JDK in step with the toolchain. Don't let CI skip
+  tests or the coverage check.
 - Local infrastructure runs on Podman (`podman compose`). Configuration lives in `.env` (git-ignored); keep
   `.env.example` in sync when adding variables. Tests don't read `.env`.
 

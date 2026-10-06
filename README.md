@@ -61,9 +61,16 @@ container runtime fails the check.
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`, on Ubuntu with JDK 25 and the
-runner's Docker for Testcontainers. First `./gradlew assemble testClasses`, then `./gradlew check` (tests, coverage
-report, 95% check). The run's summary shows the coverage per module, and the HTML report is attached to the run as
-the `coverage-report` artifact.
+runner's Docker for Testcontainers. It is a pipeline of separate jobs, each working on what the previous one produced:
+
+| Stage | Runs | Hands on |
+|---|---|---|
+| **Build** | `./gradlew assemble testClasses` | the compiled classes |
+| **Test** | `./gradlew test` on those classes, without compiling | JaCoCo execution data; test results attached to the run |
+| **Coverage** | `jacocoTestReport`, then `jacocoTestCoverageVerification` (95%), without testing again | the HTML report, attached to the run as `coverage-report` |
+| **Publish** | only for `main`: deploys the report to GitHub Pages | |
+
+A failed stage stops the ones after it. The coverage stage's summary shows the coverage per module.
 
 For `main` the report is also published on GitHub Pages: **https://akozel.github.io/axon-es-cqrs-showcase/**, an
 index of the modules linking to their reports. It is published even when the 95% check fails, so the missing code
